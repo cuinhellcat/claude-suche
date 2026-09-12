@@ -1,0 +1,320 @@
+#!/usr/bin/env python3
+"""Durchsucht alle gespeicherten Claude-Code-Unterhaltungen nach Stichworten."""
+import json, os, re, sys, glob, datetime, argparse, locale, shutil, subprocess
+
+BASE = os.path.expanduser("~/.claude")
+PROJECTS = os.path.join(BASE, "projects")
+HISTORY = os.path.join(BASE, "history.jsonl")
+
+
+def text_of(msg):
+    """Zieht den lesbaren Text aus einer Nachricht (egal welches Format)."""
+    c = msg.get("content")
+    if isinstance(c, str):
+        return c
+    out = []
+    if isinstance(c, list):
+        for x in c:
+            if not isinstance(x, dict):
+                continue
+            if x.get("type") == "text":
+                out.append(x.get("text", ""))
+            elif x.get("type") == "tool_result":
+                r = x.get("content")
+                out.append(r if isinstance(r, str) else json.dumps(r, ensure_ascii=False))
+    return " ".join(out)
+
+
+def scan(path, pat, need_all, pats):
+    """Liest eine Unterhaltung und liefert Treffer + Metadaten."""
+    first_ts = last_ts = None
+    first_prompt = None
+    cwd = None
+    hits = []
+    seen = set()
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            try:
+                o = json.loads(line)
+            except Exception:
+                continue
+            ts = o.get("timestamp")
+            if ts:
+                first_ts = first_ts or ts
+                last_ts = ts
+            if cwd is None and o.get("cwd"):
+                cwd = o["cwd"]
+            if o.get("type") not in ("user", "assistant"):
+                continue
+            t = text_of(o.get("message", {}))
+            if not t:
+                continue
+            if first_prompt is None and o.get("type") == "user":
+                s = t.strip().replace("\n", " ")
+                if s and not s.startswith("<") and "local-command" not in s and len(s) > 20:
+                    first_prompt = s[:110]
+            for m in pat.finditer(t):
+                a, b = max(0, m.start() - 70), min(len(t), m.end() + 70)
+                snip = " ".join(t[a:b].split())
+                if snip in seen:
+                    continue
+                seen.add(snip)
+                hits.append((o.get("type"), (ts or "")[:16], snip))
+    if need_all and not all(p.search(open(path, encoding="utf-8", errors="replace").read()) for p in pats):
+        return None
+    if not hits:
+        return None
+    return dict(first=first_ts, last=last_ts, prompt=first_prompt, hits=hits, cwd=cwd)
+
+
+def titel_von(datei):
+    """Liest den per /rename vergebenen Session-Namen, falls vorhanden."""
+    seiten_ordner = datei[:-6]  # ".jsonl" ab
+    try:
+        with open(os.path.join(seiten_ordner, "custom-title.json"), encoding="utf-8") as fh:
+            t = json.load(fh).get("customTitle")
+            return t.strip() if isinstance(t, str) and t.strip() else None
+    except Exception:
+        return None
+
+
+def hilfe():
+    """Kurze Übersicht aller Befehle."""
+    f = "\033[1m%s\033[0m"
+    print(f % "claude-suche" + " — findet frühere Claude-Gespräche\n")
+    zeilen = [
+        ("claude-suche wort",        "Auswahlliste, Enter öffnet das Gespräch"),
+        ("claude-suche wort1 wort2", "findet EINES der Wörter"),
+        ("claude-suche -t wort1 wort2", "findet nur, wo ALLE Wörter vorkommen"),
+        ("claude-suche -l wort",     "nur ausdrucken, keine Auswahl"),
+        ("claude-suche -v wort",     "Fundstellen im Text zeigen"),
+        ("claude-suche -p wort",     "auch alte, gelöschte Gespräche"),
+        ("claude-suche -h",          "diese Übersicht (auch -? oder --help)"),
+    ]
+    breite = max(len(a) for a, _ in zeilen)
+    for befehl, was in zeilen:
+        print("  " + (f % befehl.ljust(breite)) + "   " + was)
+    print("\nIn der Auswahlliste:")
+    print("  Pfeiltasten / Bild-hoch / Bild-runter / Pos1 / Ende   wählen")
+    print("  Enter   öffnet das Gespräch im richtigen Ordner")
+    print("  q       bricht ab\n")
+    print("Hinweis: Manche Konsolen verschlucken das Fragezeichen.")
+    print("Dann \"-?\" in Anführungszeichen schreiben.")
+
+
+def waehle(rows, worte):
+    """Zeigt die Treffer als Liste. Pfeiltasten + Enter. Gibt den Index zurück.
+    Liefert False, wenn keine Auswahlliste möglich ist (curses fehlt)."""
+    try:
+        import curses
+    except ImportError:
+        print("Hinweis: Auswahlliste braucht das Modul curses.")
+        if os.name == "nt":
+            print("         Unter Windows:  pip install windows-curses")
+        print("         Bis dahin nur die Liste:\n")
+        return False
+
+    eintraege = []
+    for r in rows:
+        eintraege.append(dict(
+            titel=titel_von(r["file"]),
+            ordner=r.get("cwd") or os.path.basename(os.path.dirname(r["file"])),
+            von=(r["first"] or "")[:10],
+            bis=(r["last"] or "")[:10],
+            n=len(r["hits"]),
+            prompt=r["prompt"] or "",
+        ))
+
+    def block(e, gewaehlt):
+        """Die Zeilen eines Eintrags. Immer alle Angaben, der gewählte hervorgehoben."""
+        zeit = e["von"] if e["von"] == e["bis"] else "%s bis %s" % (e["von"], e["bis"])
+        mark = "> " if gewaehlt else "  "
+        zs = [("%s%d Treffer  %s" % (mark, e["n"], zeit),
+               curses.A_REVERSE if gewaehlt else curses.A_BOLD)]
+        if e["titel"]:
+            zs.append(("    Name   : " + e["titel"],
+                       curses.A_BOLD if gewaehlt else 0))
+        zs.append(("    Ordner : " + e["ordner"], 0))
+        zs.append(("    Beginn : " + e["prompt"], curses.A_DIM))
+        zs.append(("", 0))
+        return zs
+
+    def lauf(scr):
+        curses.curs_set(0)
+        scr.keypad(True)
+        try:
+            curses.set_escdelay(25)
+        except Exception:
+            pass
+        try:
+            curses.use_default_colors()
+        except curses.error:
+            pass
+        pos = 0
+        oben = 0
+        while True:
+            scr.erase()
+            h, b = scr.getmaxyx()
+            scr.addnstr(0, 0, "%d Gespräche zu: %s" % (len(eintraege), " ".join(worte)),
+                        b - 1, curses.A_BOLD)
+            scr.addnstr(1, 0, "Pfeiltasten wählen · Enter öffnet · q bricht ab",
+                        b - 1, curses.A_DIM)
+
+            # alle Zeilen bauen und merken, wo der gewählte Block liegt
+            zeilen = []
+            blockstart = blocklaenge = 0
+            for i, e in enumerate(eintraege):
+                zs = block(e, i == pos)
+                if i == pos:
+                    blockstart, blocklaenge = len(zeilen), len(zs)
+                zeilen.extend(zs)
+
+            platz = max(1, h - 3)
+            if blockstart < oben:
+                oben = blockstart
+            if blockstart + blocklaenge > oben + platz:
+                oben = min(blockstart, blockstart + blocklaenge - platz)
+            oben = max(0, min(oben, max(0, len(zeilen) - platz)))
+
+            for j in range(oben, min(len(zeilen), oben + platz)):
+                text, attr = zeilen[j]
+                if text:
+                    scr.addnstr(3 + j - oben, 0, text, b - 1, attr)
+            scr.refresh()
+
+            k = scr.getch()
+            if k == 27:  # Notfall: rohe Pfeiltasten-Folge (ESC [ A/B)
+                scr.nodelay(True)
+                folge = [scr.getch(), scr.getch()]
+                scr.nodelay(False)
+                if folge[0] in (ord("["), ord("O")):
+                    k = {ord("A"): curses.KEY_UP, ord("B"): curses.KEY_DOWN,
+                         ord("H"): curses.KEY_HOME, ord("F"): curses.KEY_END}.get(folge[1], -1)
+                elif folge[0] == -1:
+                    return None  # ESC allein = Abbruch
+            if k in (curses.KEY_DOWN, ord("j")):
+                pos = min(len(eintraege) - 1, pos + 1)
+            elif k in (curses.KEY_UP, ord("k")):
+                pos = max(0, pos - 1)
+            elif k == curses.KEY_HOME:
+                pos = 0
+            elif k == curses.KEY_END:
+                pos = len(eintraege) - 1
+            elif k == curses.KEY_NPAGE:
+                pos = min(len(eintraege) - 1, pos + 5)
+            elif k == curses.KEY_PPAGE:
+                pos = max(0, pos - 5)
+            elif k in (10, 13, curses.KEY_ENTER):
+                return pos
+            elif k == ord("q"):
+                return None
+
+    return curses.wrapper(lauf)
+
+
+def oeffne(r):
+    """Wechselt in den Ordner des Gesprächs und startet claude --resume."""
+    sid = os.path.basename(r["file"])[:-6]
+    ordner = r.get("cwd")
+    if ordner and os.path.isdir(ordner):
+        os.chdir(ordner)
+    else:
+        ordner = os.getcwd()
+    print("Öffne %s\n  in %s" % (titel_von(r["file"]) or sid, ordner))
+    sys.stdout.flush()
+    exe = shutil.which("claude")
+    if not exe:
+        print("Fehler: 'claude' nicht gefunden. Von Hand:  claude --resume " + sid)
+        return 1
+    if os.name == "nt":
+        try:
+            return subprocess.call([exe, "--resume", sid])
+        except KeyboardInterrupt:
+            return 130
+    os.execvp(exe, [exe, "--resume", sid])
+
+
+def main():
+    try:
+        locale.setlocale(locale.LC_ALL, "")
+    except locale.Error:
+        pass
+    if os.name == "nt":
+        os.system("")  # schaltet Farbcodes in der Windows-Konsole frei
+    ap = argparse.ArgumentParser(add_help=False)
+    ap.add_argument("-t", "--alle", action="store_true", help="alle Wörter müssen vorkommen")
+    ap.add_argument("-v", "--volltext", action="store_true", help="Fundstellen anzeigen")
+    ap.add_argument("-p", "--prompts", action="store_true", help="auch alte Eingaben durchsuchen")
+    ap.add_argument("-l", "--liste", action="store_true", help="nur auflisten, keine Auswahl")
+    ap.add_argument("-h", "--help", "-?", "--?", dest="help", action="store_true")
+    ap.add_argument("worte", nargs="*")
+    a = ap.parse_args()
+    if a.help or not a.worte:
+        hilfe()
+        return 0
+
+    pats = [re.compile(re.escape(w), re.I) for w in a.worte]
+    pat = re.compile("|".join(re.escape(w) for w in a.worte), re.I)
+
+    rows = []
+    for f in glob.glob(os.path.join(PROJECTS, "*", "*.jsonl")):
+        if os.sep + "memory" + os.sep in f:
+            continue
+        try:
+            r = scan(f, pat, a.alle, pats)
+        except Exception:
+            continue
+        if r:
+            r["file"] = f
+            rows.append(r)
+
+    rows.sort(key=lambda r: len(r["hits"]), reverse=True)
+
+    if rows and sys.stdout.isatty() and sys.stdin.isatty() \
+            and not (a.liste or a.volltext or a.prompts):
+        i = waehle(rows, a.worte)
+        if i is None:
+            return 0
+        if i is not False:
+            return oeffne(rows[i])
+
+    if not rows:
+        print("Keine Unterhaltung gefunden.")
+    for r in rows:
+        sid = os.path.basename(r["file"])[:-6]
+        ordner = r.get("cwd") or os.path.basename(os.path.dirname(r["file"]))
+        titel = titel_von(r["file"])
+        print(f"\n\033[1m{len(r['hits'])} Treffer\033[0m  {(r['first'] or '')[:10]} bis {(r['last'] or '')[:10]}")
+        if titel:
+            print(f"  Name   : \033[1m{titel}\033[0m")
+        print(f"  Ordner : {ordner}")
+        print(f"  Beginn : {r['prompt']}")
+        print(f"  Öffnen : claude --resume {sid}")
+        if a.volltext:
+            for typ, ts, snip in r["hits"][:6]:
+                wer = "DU " if typ == "user" else "CLD"
+                print(f"    [{wer} {ts[:10]}] …{snip}…")
+
+    if a.prompts and os.path.exists(HISTORY):
+        print("\n\033[1m--- Eigene Eingaben (auch aus gelöschten Gesprächen) ---\033[0m")
+        have = {os.path.basename(p)[:-6] for p in glob.glob(os.path.join(PROJECTS, "*", "*.jsonl"))}
+        for line in open(HISTORY, encoding="utf-8", errors="replace"):
+            try:
+                o = json.loads(line)
+            except Exception:
+                continue
+            d = o.get("display", "")
+            if a.alle:
+                if not all(p.search(d) for p in pats):
+                    continue
+            elif not pat.search(d):
+                continue
+            ts = o.get("timestamp")
+            when = datetime.datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d %H:%M") if ts else "?"
+            weg = "" if o.get("sessionId") in have else "  \033[31m[Gespräch gelöscht]\033[0m"
+            print(f"  {when}{weg}\n    {' '.join(d.split())[:200]}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
