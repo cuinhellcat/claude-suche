@@ -1,5 +1,11 @@
-#!/usr/bin/env python3
-"""Durchsucht alle gespeicherten Claude-Code-Unterhaltungen nach Stichworten."""
+#!/bin/sh
+''''[ -n "$MSYSTEM" ] && exec python "$0" "$@"
+# Startzeilen fuer jede Shell (Linux, macOS, Git Bash unter Windows):
+# die Shell sucht selbst einen Python-Interpreter; Python sieht hier nur Text.
+command -v python3 >/dev/null 2>&1 && exec python3 "$0" "$@"
+exec python "$0" "$@"
+'''
+# Durchsucht alle gespeicherten Claude-Code-Unterhaltungen nach Stichworten.
 import json, os, re, sys, glob, datetime, argparse, locale, shutil, subprocess
 
 BASE = os.path.expanduser("~/.claude")

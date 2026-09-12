@@ -59,8 +59,13 @@ chmod +x ~/.local/bin/claude-suche
 
 **Windows**
 
-1. `claude-suche` und `claude-suche.cmd` in einen Ordner legen, der im PATH ist.
+1. Beide Dateien `claude-suche` **und** `claude-suche.cmd` in einen Ordner legen, der im PATH ist (z. B. `C:\Users\<name>\bin`).
+   - PowerShell und cmd nehmen die `.cmd`.
+   - Git Bash nimmt die Datei ohne Endung — sie sucht sich selbst einen Python-Interpreter.
 2. `pip install windows-curses` (für die Pfeiltasten-Liste; ohne das gibt es nur die Textliste).
+3. Terminal neu öffnen.
+
+Im Windows Terminal funktioniert die Pfeiltasten-Liste. Im alten Git-Bash-Fenster (mintty) erscheint stattdessen die Textliste.
 
 ## Gespräche nicht mehr löschen lassen
 
