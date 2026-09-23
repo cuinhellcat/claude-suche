@@ -70,6 +70,8 @@ Die Zusammenfassung, die `/compact` schreibt („This session is being continued
 
 Wird die Ausgabe weitergeleitet (`\| grep …`), erscheint automatisch die reine Liste.
 
+**Apostroph im Suchwort:** Setz das Wort in doppelte Anführungszeichen: `claude-suche "ter'Vettersteen"`. Ohne sie wartet die Konsole auf ein zweites `'` und scheint zu hängen. `Strg+C` befreit sie wieder.
+
 ## Installation
 
 Braucht nur Python 3. Keine Abhängigkeiten.

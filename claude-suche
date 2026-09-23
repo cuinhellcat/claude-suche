@@ -242,7 +242,11 @@ def hilfe():
     print("Eine Kette entsteht, wenn /compact das Gespräch in einer neuen Datei")
     print("fortsetzt. Angezeigt wird das neueste Glied, gezählt werden alle.\n")
     print("Hinweis: Manche Konsolen verschlucken das Fragezeichen.")
-    print("Dann \"-?\" in Anführungszeichen schreiben.")
+    print("Dann \"-?\" in Anführungszeichen schreiben.\n")
+    print("Wörter mit Apostroph (') in doppelte Anführungszeichen setzen:")
+    print("  claude-suche \"ter'Vettersteen\"")
+    print("Sonst wartet die Konsole auf ein zweites ' und scheint zu hängen.")
+    print("Strg+C befreit sie wieder.")
 
 
 def waehle(eintraege, worte):
