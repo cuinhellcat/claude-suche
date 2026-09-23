@@ -31,12 +31,17 @@ def text_of(msg):
     return " ".join(out)
 
 
-def scan(path, pat, need_all, pats):
-    """Liest eine Unterhaltung und liefert Treffer + Metadaten."""
-    first_ts = last_ts = None
-    first_prompt = None
-    cwd = None
-    hits = []
+def einzeilig(s, n=160):
+    s = " ".join((s or "").split())
+    return s if len(s) <= n else s[:n - 1] + "…"
+
+
+def scan(path, pat, pats):
+    """Liest eine Unterhaltung: Treffer, Metadaten und Verweise auf Vorgänger.
+    Liefert immer ein Ergebnis, auch ohne Treffer (für Ketten nötig)."""
+    m = dict(file=path, sid=os.path.basename(path)[:-6], first=None, last=None,
+             cwd=None, titel=None, ai_titel=None, stand=None, letzte=None,
+             hits=[], worte=set(), uuids=set(), eltern_uuids=[])
     seen = set()
     with open(path, encoding="utf-8", errors="replace") as fh:
         for line in fh:
@@ -44,44 +49,153 @@ def scan(path, pat, need_all, pats):
                 o = json.loads(line)
             except Exception:
                 continue
+            typ = o.get("type")
             ts = o.get("timestamp")
             if ts:
-                first_ts = first_ts or ts
-                last_ts = ts
-            if cwd is None and o.get("cwd"):
-                cwd = o["cwd"]
-            if o.get("type") not in ("user", "assistant"):
-                continue
+                m["first"] = m["first"] or ts
+                m["last"] = ts
+            if o.get("uuid"):
+                m["uuids"].add(o["uuid"])
+            if m["cwd"] is None and o.get("cwd"):
+                m["cwd"] = o["cwd"]
+            if typ == "custom-title" and o.get("customTitle"):
+                m["titel"] = o["customTitle"].strip() or m["titel"]
+            elif typ == "ai-title" and o.get("aiTitle"):
+                m["ai_titel"] = o["aiTitle"].strip() or m["ai_titel"]
+            elif typ == "last-prompt" and o.get("lastPrompt"):
+                m["letzte"] = o["lastPrompt"]
+            elif typ == "system":
+                if o.get("subtype") == "away_summary" and isinstance(o.get("content"), str):
+                    m["stand"] = o["content"]
+                elif o.get("subtype") == "compact_boundary" and o.get("logicalParentUuid"):
+                    m["eltern_uuids"].append(o["logicalParentUuid"])
+            if typ not in ("user", "assistant") or o.get("isCompactSummary"):
+                continue  # Zusammenfassung wiederholt nur Altes -> nicht zählen
             t = text_of(o.get("message", {}))
             if not t:
                 continue
-            if first_prompt is None and o.get("type") == "user":
-                s = t.strip().replace("\n", " ")
-                if s and not s.startswith("<") and "local-command" not in s and len(s) > 20:
-                    first_prompt = s[:110]
-            for m in pat.finditer(t):
-                a, b = max(0, m.start() - 70), min(len(t), m.end() + 70)
+            for mt in pat.finditer(t):
+                a, b = max(0, mt.start() - 70), min(len(t), mt.end() + 70)
                 snip = " ".join(t[a:b].split())
                 if snip in seen:
                     continue
                 seen.add(snip)
-                hits.append((o.get("type"), (ts or "")[:16], snip))
-    if need_all and not all(p.search(open(path, encoding="utf-8", errors="replace").read()) for p in pats):
-        return None
-    if not hits:
-        return None
-    return dict(first=first_ts, last=last_ts, prompt=first_prompt, hits=hits, cwd=cwd)
+                m["hits"].append((typ, ts or "", snip))
+                for i, p in enumerate(pats):
+                    if p.search(mt.group(0)):
+                        m["worte"].add(i)
+    if not m["titel"]:
+        m["titel"] = titel_aus_datei(path)
+    return m
 
 
-def titel_von(datei):
-    """Liest den per /rename vergebenen Session-Namen, falls vorhanden."""
-    seiten_ordner = datei[:-6]  # ".jsonl" ab
+def titel_aus_datei(datei):
+    """Älterer Ablageort des /rename-Namens: <session>/custom-title.json."""
     try:
-        with open(os.path.join(seiten_ordner, "custom-title.json"), encoding="utf-8") as fh:
+        with open(os.path.join(datei[:-6], "custom-title.json"), encoding="utf-8") as fh:
             t = json.load(fh).get("customTitle")
             return t.strip() if isinstance(t, str) and t.strip() else None
     except Exception:
         return None
+
+
+def ketten(metas):
+    """Fasst Sitzungen zusammen, die per /compact in eine neue Datei gewandert sind.
+    Liefert Einträge: das jüngste Glied plus alle Glieder in zeitlicher Folge."""
+    uuid_zu_sid = {}
+    for m in metas.values():
+        for u in m["uuids"]:
+            uuid_zu_sid.setdefault(u, m["sid"])
+    eltern = {}
+    kinder = {}
+    for m in metas.values():
+        for u in m["eltern_uuids"]:
+            p = uuid_zu_sid.get(u)
+            if p and p != m["sid"]:
+                eltern.setdefault(m["sid"], p)
+                kinder.setdefault(p, [])
+                if m["sid"] not in kinder[p]:
+                    kinder[p].append(m["sid"])
+                break
+    for p in kinder:
+        kinder[p].sort(key=lambda s: metas[s]["first"] or "")
+
+    def wurzel(s):
+        besucht = set()
+        while s in eltern and s not in besucht:
+            besucht.add(s)
+            s = eltern[s]
+        return s
+
+    gruppen = {}
+    for sid in metas:
+        gruppen.setdefault(wurzel(sid), None)
+
+    eintraege = []
+    for w in gruppen:
+        glieder = []  # (sid, tiefe) in zeitlicher Folge (Tiefensuche)
+
+        def lauf(s, tiefe, besucht):
+            if s in besucht:
+                return
+            besucht.add(s)
+            glieder.append((s, tiefe))
+            for k in kinder.get(s, []):
+                lauf(k, tiefe + 1, besucht)
+        lauf(w, 0, set())
+        ms = [metas[s] for s, _ in glieder]
+        if not any(m["hits"] for m in ms):
+            continue
+        blaetter = [m for m in ms if m["sid"] not in kinder] or ms
+        neu = max(blaetter, key=lambda m: m["last"] or "")
+        eintraege.append(dict(
+            neu=neu,
+            glieder=[(metas[s], t) for s, t in glieder],
+            n=sum(len(m["hits"]) for m in ms),
+            worte=set().union(*(m["worte"] for m in ms)),
+            von=min((m["first"] or "") for m in ms)[:10],
+            bis=max((m["last"] or "") for m in ms)[:10],
+        ))
+    return eintraege
+
+
+def name_von(e):
+    neu = e["neu"]
+    if neu["titel"] or neu["ai_titel"]:
+        return neu["titel"] or neu["ai_titel"]
+    for m, _ in reversed(e["glieder"]):
+        if m["titel"] or m["ai_titel"]:
+            return m["titel"] or m["ai_titel"]
+    return None
+
+
+def stand_von(e):
+    for m in [e["neu"]] + [m for m, _ in reversed(e["glieder"])]:
+        if m["stand"]:
+            return m["stand"]
+    for m in [e["neu"]] + [m for m, _ in reversed(e["glieder"])]:
+        if m["letzte"]:
+            return m["letzte"]
+    return ""
+
+
+def fund_von(e):
+    hits = [h for m, _ in e["glieder"] for h in m["hits"]]
+    return max(hits, key=lambda h: h[1])[2] if hits else ""
+
+
+def kopfzeile(e):
+    zeit = e["von"] if e["von"] == e["bis"] else "%s bis %s" % (e["von"], e["bis"])
+    teile = ""
+    if len(e["glieder"]) > 1:
+        teile = " (%s)" % "+".join(str(len(m["hits"])) for m, _ in e["glieder"])
+    return "%d Treffer%s  %s" % (e["n"], teile, zeit)
+
+
+def baumzeile(e, m, tiefe):
+    name = m["titel"] or m["ai_titel"] or einzeilig(m["letzte"], 60) or m["sid"][:8]
+    neu = "   ← neueste" if m is e["neu"] else ""
+    return "%s└ %-4d %s  %s%s" % ("  " * tiefe, len(m["hits"]), (m["first"] or "")[:10], name, neu)
 
 
 def hilfe():
@@ -103,14 +217,18 @@ def hilfe():
     print("\nIn der Auswahlliste:")
     print("  Pfeiltasten / Bild-hoch / Bild-runter / Pos1 / Ende   wählen")
     print("  Enter   öffnet das Gespräch im richtigen Ordner")
+    print("  e       klappt eine Kette auf/zu (erkennbar an „(111+11+1)“)")
     print("  q       bricht ab\n")
+    print("Eine Kette entsteht, wenn /compact das Gespräch in einer neuen Datei")
+    print("fortsetzt. Angezeigt wird das neueste Glied, gezählt werden alle.\n")
     print("Hinweis: Manche Konsolen verschlucken das Fragezeichen.")
     print("Dann \"-?\" in Anführungszeichen schreiben.")
 
 
-def waehle(rows, worte):
-    """Zeigt die Treffer als Liste. Pfeiltasten + Enter. Gibt den Index zurück.
-    Liefert False, wenn keine Auswahlliste möglich ist (curses fehlt)."""
+def waehle(eintraege, worte):
+    """Zeigt die Treffer als Liste. Pfeiltasten + Enter, e klappt Ketten auf.
+    Gibt die gewählte Sitzung zurück, None bei Abbruch,
+    False wenn keine Auswahlliste möglich ist (curses fehlt)."""
     try:
         import curses
     except ImportError:
@@ -120,30 +238,11 @@ def waehle(rows, worte):
         print("         Bis dahin nur die Liste:\n")
         return False
 
-    eintraege = []
-    for r in rows:
-        eintraege.append(dict(
-            titel=titel_von(r["file"]),
-            ordner=r.get("cwd") or os.path.basename(os.path.dirname(r["file"])),
-            von=(r["first"] or "")[:10],
-            bis=(r["last"] or "")[:10],
-            n=len(r["hits"]),
-            prompt=r["prompt"] or "",
-        ))
-
-    def block(e, gewaehlt):
-        """Die Zeilen eines Eintrags. Immer alle Angaben, der gewählte hervorgehoben."""
-        zeit = e["von"] if e["von"] == e["bis"] else "%s bis %s" % (e["von"], e["bis"])
-        mark = "> " if gewaehlt else "  "
-        zs = [("%s%d Treffer  %s" % (mark, e["n"], zeit),
-               curses.A_REVERSE if gewaehlt else curses.A_BOLD)]
-        if e["titel"]:
-            zs.append(("    Name   : " + e["titel"],
-                       curses.A_BOLD if gewaehlt else 0))
-        zs.append(("    Ordner : " + e["ordner"], 0))
-        zs.append(("    Beginn : " + e["prompt"], curses.A_DIM))
-        zs.append(("", 0))
-        return zs
+    for e in eintraege:
+        e["_name"] = name_von(e)
+        e["_stand"] = einzeilig(stand_von(e), 400)
+        e["_fund"] = einzeilig(fund_von(e), 400)
+    offen = set()
 
     def lauf(scr):
         curses.curs_set(0)
@@ -156,30 +255,57 @@ def waehle(rows, worte):
             curses.use_default_colors()
         except curses.error:
             pass
-        pos = 0
+        pos = 0   # Index in die wählbaren Punkte
         oben = 0
         while True:
+            # wählbare Punkte: (eintrag, sitzung); Kopf = neuestes Glied
+            punkte = []
+            for i, e in enumerate(eintraege):
+                punkte.append((i, e["neu"]))
+                if i in offen:
+                    punkte.extend((i, m) for m, _ in e["glieder"])
+            pos = max(0, min(pos, len(punkte) - 1))
+            akt_i, akt_m = punkte[pos]
+            auf_kopf = pos == 0 or punkte[pos - 1][0] != akt_i
+
             scr.erase()
             h, b = scr.getmaxyx()
             scr.addnstr(0, 0, "%d Gespräche zu: %s" % (len(eintraege), " ".join(worte)),
                         b - 1, curses.A_BOLD)
-            scr.addnstr(1, 0, "Pfeiltasten wählen · Enter öffnet · q bricht ab",
+            scr.addnstr(1, 0, "Pfeiltasten wählen · Enter öffnet · e Kette auf/zu · q bricht ab",
                         b - 1, curses.A_DIM)
 
-            # alle Zeilen bauen und merken, wo der gewählte Block liegt
             zeilen = []
-            blockstart = blocklaenge = 0
+            sel_start = sel_len = 0
             for i, e in enumerate(eintraege):
-                zs = block(e, i == pos)
-                if i == pos:
-                    blockstart, blocklaenge = len(zeilen), len(zs)
-                zeilen.extend(zs)
+                start = len(zeilen)
+                kopf_gewaehlt = i == akt_i and auf_kopf
+                mark = "> " if kopf_gewaehlt else "  "
+                zeilen.append((mark + kopfzeile(e),
+                               curses.A_REVERSE if kopf_gewaehlt else curses.A_BOLD))
+                if e["_name"]:
+                    zeilen.append(("    Name   : " + e["_name"],
+                                   curses.A_BOLD if i == akt_i else 0))
+                zeilen.append(("    Ordner : " + (e["neu"]["cwd"] or "?"), 0))
+                if e["_stand"]:
+                    zeilen.append(("    Stand  : " + e["_stand"], curses.A_DIM))
+                zeilen.append(("    Fund   : …" + e["_fund"] + "…", curses.A_DIM))
+                if i in offen:
+                    for m, tiefe in e["glieder"]:
+                        gew = i == akt_i and not auf_kopf and m is akt_m
+                        if gew:
+                            sel_start, sel_len = len(zeilen), 1
+                        zeilen.append((("  > " if gew else "    ") + baumzeile(e, m, tiefe),
+                                       curses.A_REVERSE if gew else 0))
+                zeilen.append(("", 0))
+                if kopf_gewaehlt:
+                    sel_start, sel_len = start, len(zeilen) - start
 
             platz = max(1, h - 3)
-            if blockstart < oben:
-                oben = blockstart
-            if blockstart + blocklaenge > oben + platz:
-                oben = min(blockstart, blockstart + blocklaenge - platz)
+            if sel_start < oben:
+                oben = sel_start
+            if sel_start + sel_len > oben + platz:
+                oben = min(sel_start, sel_start + sel_len - platz)
             oben = max(0, min(oben, max(0, len(zeilen) - platz)))
 
             for j in range(oben, min(len(zeilen), oben + platz)):
@@ -199,34 +325,40 @@ def waehle(rows, worte):
                 elif folge[0] == -1:
                     return None  # ESC allein = Abbruch
             if k in (curses.KEY_DOWN, ord("j")):
-                pos = min(len(eintraege) - 1, pos + 1)
+                pos += 1
             elif k in (curses.KEY_UP, ord("k")):
-                pos = max(0, pos - 1)
+                pos -= 1
             elif k == curses.KEY_HOME:
                 pos = 0
             elif k == curses.KEY_END:
-                pos = len(eintraege) - 1
+                pos = len(punkte) - 1
             elif k == curses.KEY_NPAGE:
-                pos = min(len(eintraege) - 1, pos + 5)
+                pos += 5
             elif k == curses.KEY_PPAGE:
-                pos = max(0, pos - 5)
+                pos -= 5
+            elif k == ord("e"):
+                if akt_i in offen:
+                    offen.discard(akt_i)
+                    pos = next(j for j, p in enumerate(punkte) if p[0] == akt_i)
+                elif len(eintraege[akt_i]["glieder"]) > 1:
+                    offen.add(akt_i)
             elif k in (10, 13, curses.KEY_ENTER):
-                return pos
+                return akt_m
             elif k == ord("q"):
                 return None
 
     return curses.wrapper(lauf)
 
 
-def oeffne(r):
+def oeffne(m):
     """Wechselt in den Ordner des Gesprächs und startet claude --resume."""
-    sid = os.path.basename(r["file"])[:-6]
-    ordner = r.get("cwd")
+    sid = m["sid"]
+    ordner = m.get("cwd")
     if ordner and os.path.isdir(ordner):
         os.chdir(ordner)
     else:
         ordner = os.getcwd()
-    print("Öffne %s\n  in %s" % (titel_von(r["file"]) or sid, ordner))
+    print("Öffne %s\n  in %s" % (m["titel"] or m["ai_titel"] or sid, ordner))
     sys.stdout.flush()
     exe = shutil.which("claude")
     if not exe:
@@ -262,48 +394,56 @@ def main():
     pats = [re.compile(re.escape(w), re.I) for w in a.worte]
     pat = re.compile("|".join(re.escape(w) for w in a.worte), re.I)
 
-    rows = []
+    metas = {}
     for f in glob.glob(os.path.join(PROJECTS, "*", "*.jsonl")):
         if os.sep + "memory" + os.sep in f:
             continue
         try:
-            r = scan(f, pat, a.alle, pats)
+            m = scan(f, pat, pats)
         except Exception:
             continue
-        if r:
-            r["file"] = f
-            rows.append(r)
+        metas[m["sid"]] = m
 
-    rows.sort(key=lambda r: len(r["hits"]), reverse=True)
+    eintraege = ketten(metas)
+    if a.alle:
+        eintraege = [e for e in eintraege if len(e["worte"]) == len(pats)]
+    eintraege.sort(key=lambda e: e["n"], reverse=True)
 
-    if rows and sys.stdout.isatty() and sys.stdin.isatty() \
+    if eintraege and sys.stdout.isatty() and sys.stdin.isatty() \
             and not (a.liste or a.volltext or a.prompts):
-        i = waehle(rows, a.worte)
-        if i is None:
+        m = waehle(eintraege, a.worte)
+        if m is None:
             return 0
-        if i is not False:
-            return oeffne(rows[i])
+        if m is not False:
+            return oeffne(m)
 
-    if not rows:
+    if not eintraege:
         print("Keine Unterhaltung gefunden.")
-    for r in rows:
-        sid = os.path.basename(r["file"])[:-6]
-        ordner = r.get("cwd") or os.path.basename(os.path.dirname(r["file"]))
-        titel = titel_von(r["file"])
-        print(f"\n\033[1m{len(r['hits'])} Treffer\033[0m  {(r['first'] or '')[:10]} bis {(r['last'] or '')[:10]}")
-        if titel:
-            print(f"  Name   : \033[1m{titel}\033[0m")
-        print(f"  Ordner : {ordner}")
-        print(f"  Beginn : {r['prompt']}")
-        print(f"  Öffnen : claude --resume {sid}")
+    for e in eintraege:
+        neu = e["neu"]
+        name = name_von(e)
+        stand = einzeilig(stand_von(e))
+        print(f"\n\033[1m{kopfzeile(e)}\033[0m")
+        if name:
+            print(f"  Name   : \033[1m{name}\033[0m")
+        print(f"  Ordner : {neu['cwd'] or '?'}")
+        if stand:
+            print(f"  Stand  : {stand}")
+        print(f"  Fund   : …{einzeilig(fund_von(e))}…")
+        print(f"  Öffnen : claude --resume {neu['sid']}")
+        if len(e["glieder"]) > 1:
+            print("  Kette  :")
+            for m, tiefe in e["glieder"]:
+                print(f"    {baumzeile(e, m, tiefe)}   (claude --resume {m['sid']})")
         if a.volltext:
-            for typ, ts, snip in r["hits"][:6]:
-                wer = "DU " if typ == "user" else "CLD"
-                print(f"    [{wer} {ts[:10]}] …{snip}…")
+            for m, _ in e["glieder"]:
+                for typ, ts, snip in m["hits"][:6]:
+                    wer = "DU " if typ == "user" else "CLD"
+                    print(f"    [{wer} {ts[:10]}] …{snip}…")
 
     if a.prompts and os.path.exists(HISTORY):
         print("\n\033[1m--- Eigene Eingaben (auch aus gelöschten Gesprächen) ---\033[0m")
-        have = {os.path.basename(p)[:-6] for p in glob.glob(os.path.join(PROJECTS, "*", "*.jsonl"))}
+        have = set(metas)
         for line in open(HISTORY, encoding="utf-8", errors="replace"):
             try:
                 o = json.loads(line)

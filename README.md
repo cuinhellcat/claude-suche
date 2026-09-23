@@ -17,20 +17,40 @@ claude-suche hellgarda
 ```
 
 ```
-3 Gespräche zu: hellgarda
-Pfeiltasten wählen · Enter öffnet · q bricht ab
+2 Gespräche zu: hellgarda
+Pfeiltasten wählen · Enter öffnet · e Kette auf/zu · q bricht ab
 
-> 39 Treffer  2026-08-22
+> 142 Treffer  2026-08-22 bis 2026-09-12
     Name   : Hellgarda Bannstrahlerin
     Ordner : /home/ich/Projects/DSA/Wiki-Scrape
-    Beginn : Hi, du wirst mir helfen, einen wichtigen NSC auszuarbeiten…
+    Stand  : Wir arbeiten Hellgarda als Antagonistin aus. Gerade fertig: …
+    Fund   : …Hellgarda trägt das Sonnenzeichen offen auf dem Harnisch…
 
-  4 Treffer  2026-08-22
-    Ordner : /home/ich/Documents/Quellenbände
-    Beginn : Im PDF "Orden und Buendnisse" sollen Infos über die…
+  32 Treffer (1+31)  2026-08-24 bis 2026-08-27
+    Name   : Dämonen nach Domänen
+    Ordner : /home/ich/Projects/DSA/Dämonen
+    Stand  : …
+    Fund   : …
 ```
 
+- **Name:** der per `/rename` vergebene Name, sonst der Titel, den Claude Code selbst vergibt.
+- **Stand:** Claudes letzter Kurzbericht („Wir bauen … Gerade fertig: …"), sonst deine letzte Eingabe.
+- **Fund:** die Textstelle rund um den neuesten Treffer.
+
 Enter wechselt in den Ordner und startet `claude --resume <id>`.
+
+### Ketten nach `/compact`
+
+Manchmal setzt `/compact` ein Gespräch in einer **neuen Datei** fort. Dann gehören mehrere Sitzungen zusammen. `claude-suche` zeigt davon nur das **neueste Glied** und zählt die Treffer aller Glieder zusammen. Die Klammer nennt sie in zeitlicher Folge: `(1+31)` heißt 1 Treffer im älteren, 31 im neueren Teil.
+
+Mit `e` klappt die Kette auf. Jedes Glied lässt sich dann einzeln öffnen:
+
+```
+    └ 1    2026-08-24  Dämonen nach Domänen
+      └ 31   2026-08-26  Dämonen nach Domänen   ← neueste
+```
+
+Die Zusammenfassung, die `/compact` schreibt („This session is being continued…"), wird beim Zählen übersprungen. Sie wiederholt nur, was schon im älteren Teil steht.
 
 ## Befehle
 
@@ -39,7 +59,7 @@ Enter wechselt in den Ordner und startet `claude --resume <id>`.
 | `claude-suche wort` | Auswahlliste, Enter öffnet das Gespräch |
 | `claude-suche wort1 wort2` | findet EINES der Wörter |
 | `claude-suche -t wort1 wort2` | findet nur, wo ALLE Wörter vorkommen |
-| `claude-suche -l wort` | nur ausdrucken, keine Auswahl |
+| `claude-suche -l wort` | nur ausdrucken, keine Auswahl (Ketten stehen eingerückt darunter) |
 | `claude-suche -v wort` | Fundstellen im Text zeigen |
 | `claude-suche -p wort` | auch alte, gelöschte Gespräche (aus `history.jsonl`) |
 | `claude-suche -h` | Übersicht (auch `-?`) |
