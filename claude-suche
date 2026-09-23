@@ -13,22 +13,34 @@ PROJECTS = os.path.join(BASE, "projects")
 HISTORY = os.path.join(BASE, "history.jsonl")
 
 
-def text_of(msg):
-    """Zieht den lesbaren Text aus einer Nachricht (egal welches Format)."""
-    c = msg.get("content")
+def teile_von(o):
+    """Zerlegt eine Nachricht in (Quelle, Text)-Stücke.
+    Quelle: DU, CLD (Claude), Werkzeug (Befehlsausgabe), System (Einblendungen)."""
+    typ = o.get("type")
+    c = (o.get("message") or {}).get("content")
+    stuecke = []
     if isinstance(c, str):
-        return c
-    out = []
-    if isinstance(c, list):
+        stuecke.append(("text", c))
+    elif isinstance(c, list):
         for x in c:
             if not isinstance(x, dict):
                 continue
             if x.get("type") == "text":
-                out.append(x.get("text", ""))
+                stuecke.append(("text", x.get("text", "")))
             elif x.get("type") == "tool_result":
                 r = x.get("content")
-                out.append(r if isinstance(r, str) else json.dumps(r, ensure_ascii=False))
-    return " ".join(out)
+                stuecke.append(("werkzeug", r if isinstance(r, str) else json.dumps(r, ensure_ascii=False)))
+    for art, t in stuecke:
+        if not t:
+            continue
+        if art == "werkzeug":
+            yield "Werkzeug", t
+        elif typ == "assistant":
+            yield "CLD", t
+        elif o.get("isMeta") or t.lstrip().startswith("<"):
+            yield "System", t
+        else:
+            yield "DU", t
 
 
 def einzeilig(s, n=160):
@@ -71,19 +83,17 @@ def scan(path, pat, pats):
                     m["eltern_uuids"].append(o["logicalParentUuid"])
             if typ not in ("user", "assistant") or o.get("isCompactSummary"):
                 continue  # Zusammenfassung wiederholt nur Altes -> nicht zählen
-            t = text_of(o.get("message", {}))
-            if not t:
-                continue
-            for mt in pat.finditer(t):
-                a, b = max(0, mt.start() - 70), min(len(t), mt.end() + 70)
-                snip = " ".join(t[a:b].split())
-                if snip in seen:
-                    continue
-                seen.add(snip)
-                m["hits"].append((typ, ts or "", snip))
-                for i, p in enumerate(pats):
-                    if p.search(mt.group(0)):
-                        m["worte"].add(i)
+            for quelle, t in teile_von(o):
+                for mt in pat.finditer(t):
+                    a, b = max(0, mt.start() - 70), min(len(t), mt.end() + 70)
+                    snip = " ".join(t[a:b].split())
+                    if snip in seen:
+                        continue
+                    seen.add(snip)
+                    m["hits"].append((quelle, ts or "", snip))
+                    for i, p in enumerate(pats):
+                        if p.search(mt.group(0)):
+                            m["worte"].add(i)
     if not m["titel"]:
         m["titel"] = titel_aus_datei(path)
     return m
@@ -179,9 +189,17 @@ def stand_von(e):
     return ""
 
 
-def fund_von(e):
-    hits = [h for m, _ in e["glieder"] for h in m["hits"]]
-    return max(hits, key=lambda h: h[1])[2] if hits else ""
+def alle_funde(e):
+    """Alle Funde der Kette in zeitlicher Folge (ältestes Glied zuerst)."""
+    return [h for m, _ in e["glieder"] for h in m["hits"]]
+
+
+def fundzeile(hits, i, n=400):
+    """„3/165  [DU 2026-09-16]  …Text…“ für den Fund Nummer i."""
+    if not hits:
+        return "–"
+    quelle, ts, snip = hits[i]
+    return "%d/%d  [%s %s]  …%s…" % (i + 1, len(hits), quelle, ts[:10], einzeilig(snip, n))
 
 
 def kopfzeile(e):
@@ -215,7 +233,8 @@ def hilfe():
     for befehl, was in zeilen:
         print("  " + (f % befehl.ljust(breite)) + "   " + was)
     print("\nIn der Auswahlliste:")
-    print("  Pfeiltasten / Bild-hoch / Bild-runter / Pos1 / Ende   wählen")
+    print("  ↑ ↓ / Bild-hoch / Bild-runter / Pos1 / Ende   wählen")
+    print("  ← →     springt durch die Funde (älter / neuer)")
     print("  Enter   öffnet das Gespräch im richtigen Ordner")
     print("  e       klappt eine Kette auf/zu (erkennbar an „(111+11+1)“)")
     print("  q       bricht ab\n")
@@ -241,8 +260,17 @@ def waehle(eintraege, worte):
     for e in eintraege:
         e["_name"] = name_von(e)
         e["_stand"] = einzeilig(stand_von(e), 400)
-        e["_fund"] = einzeilig(fund_von(e), 400)
+        e["_funde"] = alle_funde(e)
     offen = set()
+    fundpos = {}  # (eintrag, sitzung oder None) -> Index; fehlt = neuester Fund
+
+    def funde_fuer(i, m):
+        """Funde des Kopfes (ganze Kette) oder eines einzelnen Glieds."""
+        return eintraege[i]["_funde"] if m is None else m["hits"]
+
+    def fund_index(i, m):
+        hits = funde_fuer(i, m)
+        return min(fundpos.get((i, m and m["sid"]), len(hits) - 1), len(hits) - 1)
 
     def lauf(scr):
         curses.curs_set(0)
@@ -272,8 +300,10 @@ def waehle(eintraege, worte):
             h, b = scr.getmaxyx()
             scr.addnstr(0, 0, "%d Gespräche zu: %s" % (len(eintraege), " ".join(worte)),
                         b - 1, curses.A_BOLD)
-            scr.addnstr(1, 0, "Pfeiltasten wählen · Enter öffnet · e Kette auf/zu · q bricht ab",
+            scr.addnstr(1, 0, "↑↓ wählen · ←→ Funde · Enter öffnet · e Kette auf/zu · q bricht ab",
                         b - 1, curses.A_DIM)
+            # welches Glied liefert gerade die Funde? Kopf = ganze Kette
+            glied_gewaehlt = None if auf_kopf else akt_m
 
             zeilen = []
             sel_start = sel_len = 0
@@ -289,7 +319,9 @@ def waehle(eintraege, worte):
                 zeilen.append(("    Ordner : " + (e["neu"]["cwd"] or "?"), 0))
                 if e["_stand"]:
                     zeilen.append(("    Stand  : " + e["_stand"], curses.A_DIM))
-                zeilen.append(("    Fund   : …" + e["_fund"] + "…", curses.A_DIM))
+                fm = glied_gewaehlt if i == akt_i else None
+                zeilen.append(("    Fund   : " + fundzeile(funde_fuer(i, fm), fund_index(i, fm)),
+                               0 if i == akt_i else curses.A_DIM))
                 if i in offen:
                     for m, tiefe in e["glieder"]:
                         gew = i == akt_i and not auf_kopf and m is akt_m
@@ -321,6 +353,7 @@ def waehle(eintraege, worte):
                 scr.nodelay(False)
                 if folge[0] in (ord("["), ord("O")):
                     k = {ord("A"): curses.KEY_UP, ord("B"): curses.KEY_DOWN,
+                         ord("C"): curses.KEY_RIGHT, ord("D"): curses.KEY_LEFT,
                          ord("H"): curses.KEY_HOME, ord("F"): curses.KEY_END}.get(folge[1], -1)
                 elif folge[0] == -1:
                     return None  # ESC allein = Abbruch
@@ -336,6 +369,12 @@ def waehle(eintraege, worte):
                 pos += 5
             elif k == curses.KEY_PPAGE:
                 pos -= 5
+            elif k in (curses.KEY_LEFT, curses.KEY_RIGHT):
+                hits = funde_fuer(akt_i, glied_gewaehlt)
+                if hits:
+                    schritt = -1 if k == curses.KEY_LEFT else 1
+                    neu_i = max(0, min(len(hits) - 1, fund_index(akt_i, glied_gewaehlt) + schritt))
+                    fundpos[(akt_i, glied_gewaehlt and glied_gewaehlt["sid"])] = neu_i
             elif k == ord("e"):
                 if akt_i in offen:
                     offen.discard(akt_i)
@@ -429,7 +468,8 @@ def main():
         print(f"  Ordner : {neu['cwd'] or '?'}")
         if stand:
             print(f"  Stand  : {stand}")
-        print(f"  Fund   : …{einzeilig(fund_von(e))}…")
+        funde = alle_funde(e)
+        print(f"  Fund   : {fundzeile(funde, len(funde) - 1, 160)}")
         print(f"  Öffnen : claude --resume {neu['sid']}")
         if len(e["glieder"]) > 1:
             print("  Kette  :")
@@ -437,9 +477,8 @@ def main():
                 print(f"    {baumzeile(e, m, tiefe)}   (claude --resume {m['sid']})")
         if a.volltext:
             for m, _ in e["glieder"]:
-                for typ, ts, snip in m["hits"][:6]:
-                    wer = "DU " if typ == "user" else "CLD"
-                    print(f"    [{wer} {ts[:10]}] …{snip}…")
+                for quelle, ts, snip in m["hits"][:6]:
+                    print(f"    [{quelle} {ts[:10]}] …{snip}…")
 
     if a.prompts and os.path.exists(HISTORY):
         print("\n\033[1m--- Eigene Eingaben (auch aus gelöschten Gesprächen) ---\033[0m")

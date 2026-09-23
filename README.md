@@ -18,13 +18,13 @@ claude-suche hellgarda
 
 ```
 2 Gespräche zu: hellgarda
-Pfeiltasten wählen · Enter öffnet · e Kette auf/zu · q bricht ab
+↑↓ wählen · ←→ Funde · Enter öffnet · e Kette auf/zu · q bricht ab
 
 > 142 Treffer  2026-08-22 bis 2026-09-12
     Name   : Hellgarda Bannstrahlerin
     Ordner : /home/ich/Projects/DSA/Wiki-Scrape
     Stand  : Wir arbeiten Hellgarda als Antagonistin aus. Gerade fertig: …
-    Fund   : …Hellgarda trägt das Sonnenzeichen offen auf dem Harnisch…
+    Fund   : 142/142  [CLD 2026-09-12]  …Hellgarda trägt das Sonnenzeichen offen…
 
   32 Treffer (1+31)  2026-08-24 bis 2026-08-27
     Name   : Dämonen nach Domänen
@@ -35,9 +35,9 @@ Pfeiltasten wählen · Enter öffnet · e Kette auf/zu · q bricht ab
 
 - **Name:** der per `/rename` vergebene Name, sonst der Titel, den Claude Code selbst vergibt.
 - **Stand:** Claudes letzter Kurzbericht („Wir bauen … Gerade fertig: …"), sonst deine letzte Eingabe.
-- **Fund:** die Textstelle rund um den neuesten Treffer.
+- **Fund:** eine Textstelle mit dem Suchwort, z. B. `163/165  [DU 2026-09-16]  …`. Mit **←** und **→** springst du durch alle Funde (älter / neuer). In der Klammer steht, woher der Text stammt: `DU`, `CLD` (Claude), `Werkzeug` (Befehlsausgabe) oder `System` (Einblendungen).
 
-Enter wechselt in den Ordner und startet `claude --resume <id>`.
+Enter wechselt in den Ordner und startet `claude --resume <id>`. Claude Code öffnet dabei immer die ganze Sitzung; an die Fundstelle selbst springt es nicht.
 
 ### Ketten nach `/compact`
 
