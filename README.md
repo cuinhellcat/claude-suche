@@ -17,7 +17,7 @@ claude-suche hellgarda
 ```
 
 ```
-2 Gespräche zu: hellgarda
+2 Gespräche zu: hellgarda  (1 davon im Namen)
 ↑↓ wählen · ←→ Funde · Enter öffnet · e Kette auf/zu · q bricht ab
 
 > 142 Treffer  2026-08-22 bis 2026-09-12
@@ -25,6 +25,8 @@ claude-suche hellgarda
     Ordner : /home/ich/Projects/DSA/Wiki-Scrape
     Stand  : Wir arbeiten Hellgarda als Antagonistin aus. Gerade fertig: …
     Fund   : 142/142  [CLD 2026-09-12]  …Hellgarda trägt das Sonnenzeichen offen…
+
+── weitere Treffer nur im Text ─────────────────────
 
   32 Treffer (1+31)  2026-08-24 bis 2026-08-27
     Name   : Dämonen nach Domänen
@@ -36,6 +38,8 @@ claude-suche hellgarda
 - **Name:** der per `/rename` vergebene Name, sonst der Titel, den Claude Code selbst vergibt.
 - **Stand:** Claudes letzter Kurzbericht („Wir bauen … Gerade fertig: …"), sonst deine letzte Eingabe.
 - **Fund:** eine Textstelle mit dem Suchwort, z. B. `163/165  [DU 2026-09-16]  …`. Mit **←** und **→** springst du durch alle Funde (älter / neuer). In der Klammer steht, woher der Text stammt: `DU`, `CLD` (Claude), `Werkzeug` (Befehlsausgabe) oder `System` (Einblendungen).
+
+**Reihenfolge:** Steht das Suchwort im Namen, den du per `/rename` vergeben hast, kommt die Sitzung ganz nach oben. Eine Linie trennt sie von den Sitzungen, die es „nur" im Text haben. Innerhalb beider Gruppen sortiert die Trefferzahl. Claudes automatische Titel zählen dafür nicht.
 
 Enter wechselt in den Ordner und startet `claude --resume <id>`. Claude Code öffnet dabei immer die ganze Sitzung; an die Fundstelle selbst springt es nicht.
 

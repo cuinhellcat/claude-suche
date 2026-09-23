@@ -11,6 +11,7 @@ import json, os, re, sys, glob, datetime, argparse, locale, shutil, subprocess
 BASE = os.path.expanduser("~/.claude")
 PROJECTS = os.path.join(BASE, "projects")
 HISTORY = os.path.join(BASE, "history.jsonl")
+TRENNER = "── weitere Treffer nur im Text " + "─" * 40
 
 
 def teile_von(o):
@@ -154,8 +155,6 @@ def ketten(metas):
                 lauf(k, tiefe + 1, besucht)
         lauf(w, 0, set())
         ms = [metas[s] for s, _ in glieder]
-        if not any(m["hits"] for m in ms):
-            continue
         blaetter = [m for m in ms if m["sid"] not in kinder] or ms
         neu = max(blaetter, key=lambda m: m["last"] or "")
         eintraege.append(dict(
@@ -238,6 +237,8 @@ def hilfe():
     print("  Enter   öffnet das Gespräch im richtigen Ordner")
     print("  e       klappt eine Kette auf/zu (erkennbar an „(111+11+1)“)")
     print("  q       bricht ab\n")
+    print("Steht das Suchwort im per /rename vergebenen Namen, kommt die Sitzung")
+    print("nach oben, getrennt durch eine Linie von den reinen Text-Treffern.\n")
     print("Eine Kette entsteht, wenn /compact das Gespräch in einer neuen Datei")
     print("fortsetzt. Angezeigt wird das neueste Glied, gezählt werden alle.\n")
     print("Hinweis: Manche Konsolen verschlucken das Fragezeichen.")
@@ -298,8 +299,10 @@ def waehle(eintraege, worte):
 
             scr.erase()
             h, b = scr.getmaxyx()
-            scr.addnstr(0, 0, "%d Gespräche zu: %s" % (len(eintraege), " ".join(worte)),
-                        b - 1, curses.A_BOLD)
+            n_name = sum(1 for e in eintraege if e["im_namen"])
+            scr.addnstr(0, 0, "%d Gespräche zu: %s%s" % (
+                len(eintraege), " ".join(worte),
+                "  (%d davon im Namen)" % n_name if n_name else ""), b - 1, curses.A_BOLD)
             scr.addnstr(1, 0, "↑↓ wählen · ←→ Funde · Enter öffnet · e Kette auf/zu · q bricht ab",
                         b - 1, curses.A_DIM)
             # welches Glied liefert gerade die Funde? Kopf = ganze Kette
@@ -308,6 +311,9 @@ def waehle(eintraege, worte):
             zeilen = []
             sel_start = sel_len = 0
             for i, e in enumerate(eintraege):
+                if i > 0 and eintraege[i - 1]["im_namen"] and not e["im_namen"]:
+                    zeilen.append((TRENNER, curses.A_DIM))
+                    zeilen.append(("", 0))
                 start = len(zeilen)
                 kopf_gewaehlt = i == akt_i and auf_kopf
                 mark = "> " if kopf_gewaehlt else "  "
@@ -443,10 +449,21 @@ def main():
             continue
         metas[m["sid"]] = m
 
-    eintraege = ketten(metas)
-    if a.alle:
-        eintraege = [e for e in eintraege if len(e["worte"]) == len(pats)]
-    eintraege.sort(key=lambda e: e["n"], reverse=True)
+    pruefe = all if a.alle else any
+
+    def im_namen(e):
+        """Trifft die Suche einen per /rename vergebenen Namen der Kette?"""
+        return any(pruefe(p.search(m["titel"]) for p in pats)
+                   for m, _ in e["glieder"] if m["titel"])
+
+    eintraege = []
+    for e in ketten(metas):
+        e["im_namen"] = im_namen(e)
+        im_text = e["n"] > 0 and (not a.alle or len(e["worte"]) == len(pats))
+        if e["im_namen"] or im_text:
+            eintraege.append(e)
+    # Namenstreffer zuerst, darin wie gehabt nach Trefferzahl
+    eintraege.sort(key=lambda e: (not e["im_namen"], -e["n"]))
 
     if eintraege and sys.stdout.isatty() and sys.stdin.isatty() \
             and not (a.liste or a.volltext or a.prompts):
@@ -458,7 +475,9 @@ def main():
 
     if not eintraege:
         print("Keine Unterhaltung gefunden.")
-    for e in eintraege:
+    for i, e in enumerate(eintraege):
+        if i > 0 and eintraege[i - 1]["im_namen"] and not e["im_namen"]:
+            print("\n" + TRENNER)
         neu = e["neu"]
         name = name_von(e)
         stand = einzeilig(stand_von(e))
