@@ -100,6 +100,29 @@ def scan(path, pat, pats):
     return m
 
 
+def scan_sicher(args):
+    """scan() für die Helfer-Prozesse: Fehler ergeben None statt Abbruch."""
+    try:
+        return scan(*args)
+    except Exception:
+        return None
+
+
+def scan_alle(dateien, pat, pats):
+    """Liest alle Dateien, verteilt auf mehrere Prozessorkerne.
+    Klappt das nicht (z. B. eingeschränkte Umgebung), dann nacheinander."""
+    auftraege = [(f, pat, pats) for f in dateien]
+    if len(auftraege) > 1:
+        try:
+            from concurrent.futures import ProcessPoolExecutor
+            n = min(os.cpu_count() or 1, 16)
+            with ProcessPoolExecutor(max_workers=n) as pool:
+                return list(pool.map(scan_sicher, auftraege))
+        except Exception:
+            pass
+    return [scan_sicher(x) for x in auftraege]
+
+
 def titel_aus_datei(datei):
     """Älterer Ablageort des /rename-Namens: <session>/custom-title.json."""
     try:
@@ -443,15 +466,17 @@ def main():
     pats = [re.compile(re.escape(w), re.I) for w in a.worte]
     pat = re.compile("|".join(re.escape(w) for w in a.worte), re.I)
 
+    dateien = [f for f in glob.glob(os.path.join(PROJECTS, "*", "*.jsonl"))
+               if os.sep + "memory" + os.sep not in f]
+    # Große Dateien zuerst lesen, damit kein Kern am Ende allein am Riesen
+    # sitzt. Danach wieder in die alte Reihenfolge, denn ketten() hängt davon ab.
+    gross_zuerst = sorted(dateien, key=lambda f: -os.path.getsize(f))
+    ergebnis = dict(zip(gross_zuerst, scan_alle(gross_zuerst, pat, pats)))
     metas = {}
-    for f in glob.glob(os.path.join(PROJECTS, "*", "*.jsonl")):
-        if os.sep + "memory" + os.sep in f:
-            continue
-        try:
-            m = scan(f, pat, pats)
-        except Exception:
-            continue
-        metas[m["sid"]] = m
+    for f in dateien:
+        m = ergebnis[f]
+        if m:
+            metas[m["sid"]] = m
 
     pruefe = all if a.alle else any
 
