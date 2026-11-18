@@ -39,7 +39,7 @@ claude-suche hellgarda
 - **Stand:** Claudes letzter Kurzbericht („Wir bauen … Gerade fertig: …"), sonst deine letzte Eingabe.
 - **Fund:** eine Textstelle mit dem Suchwort, z. B. `163/165  [DU 2026-09-16]  …`. Mit **←** und **→** springst du durch alle Funde (älter / neuer). In der Klammer steht, woher der Text stammt: `DU`, `CLD` (Claude), `Werkzeug` (Befehlsausgabe) oder `System` (Einblendungen).
 
-**Reihenfolge:** Steht das Suchwort im Namen, den du per `/rename` vergeben hast, kommt die Sitzung ganz nach oben. Eine Linie trennt sie von den Sitzungen, die es „nur" im Text haben. Innerhalb beider Gruppen sortiert die Trefferzahl. Claudes automatische Titel zählen dafür nicht.
+**Reihenfolge:** Steht das Suchwort im Namen, den du per `/rename` vergeben hast, kommt die Sitzung ganz nach oben. Eine Linie trennt sie von den Sitzungen, die es „nur" im Text haben. Oben gilt: Je mehr Suchwörter im Namen stehen, desto weiter oben. Bei `phase.rs november` steht also „Phase.rs November“ vor „phase.rs Oktober“. Danach sortiert die Trefferzahl. Claudes automatische Titel zählen dafür nicht.
 
 Enter wechselt in den Ordner und startet `claude --resume <id>`. Claude Code öffnet dabei immer die ganze Sitzung; an die Fundstelle selbst springt es nicht.
 

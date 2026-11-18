@@ -261,7 +261,8 @@ def hilfe():
     print("  e       klappt eine Kette auf/zu (erkennbar an „(111+11+1)“)")
     print("  q       bricht ab\n")
     print("Steht das Suchwort im per /rename vergebenen Namen, kommt die Sitzung")
-    print("nach oben, getrennt durch eine Linie von den reinen Text-Treffern.\n")
+    print("nach oben, getrennt durch eine Linie von den reinen Text-Treffern.")
+    print("Je mehr Suchwörter im Namen stehen, desto weiter oben.\n")
     print("Eine Kette entsteht, wenn /compact das Gespräch in einer neuen Datei")
     print("fortsetzt. Angezeigt wird das neueste Glied, gezählt werden alle.\n")
     print("Hinweis: Manche Konsolen verschlucken das Fragezeichen.")
@@ -485,14 +486,22 @@ def main():
         return any(pruefe(p.search(m["titel"]) for p in pats)
                    for m, _ in e["glieder"] if m["titel"])
 
+    def namen_worte(e):
+        """Wie viele der Suchwörter stehen in den /rename-Namen der Kette?"""
+        titel = [m["titel"] for m, _ in e["glieder"] if m["titel"]]
+        return sum(1 for p in pats if any(p.search(t) for t in titel))
+
     eintraege = []
     for e in ketten(metas):
         e["im_namen"] = im_namen(e)
+        e["namen_worte"] = namen_worte(e)
         im_text = e["n"] > 0 and (not a.alle or len(e["worte"]) == len(pats))
         if e["im_namen"] or im_text:
             eintraege.append(e)
-    # Namenstreffer zuerst, darin wie gehabt nach Trefferzahl
-    eintraege.sort(key=lambda e: (not e["im_namen"], -e["n"]))
+    # Namenstreffer zuerst: mehr Suchwörter im Namen = weiter oben,
+    # danach nach Trefferzahl
+    eintraege.sort(key=lambda e: (not e["im_namen"], -e["namen_worte"],
+                                  -e["n"]))
 
     if eintraege and sys.stdout.isatty() and sys.stdin.isatty() \
             and not (a.liste or a.volltext or a.prompts):
