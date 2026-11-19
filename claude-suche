@@ -11,6 +11,7 @@ import json, os, re, sys, glob, datetime, argparse, locale, shutil, subprocess
 BASE = os.path.expanduser("~/.claude")
 PROJECTS = os.path.join(BASE, "projects")
 HISTORY = os.path.join(BASE, "history.jsonl")
+CODEX = os.path.expanduser("~/.codex")
 TRENNER = "── weitere Treffer nur im Text " + "─" * 40
 
 
@@ -123,6 +124,100 @@ def scan_alle(dateien, pat, pats):
     return [scan_sicher(x) for x in auftraege]
 
 
+def codex_eintraege(pat, pats):
+    """Chats aus der ChatGPT-App (Codex). Öffnen geht nur dort, die Suche zeigt sie
+    trotzdem, damit man weiß, wo etwas besprochen wurde. Unteragenten und
+    Sicherheitsprüfungen ("Guardian review") bleiben draußen."""
+    import sqlite3
+    zustand = os.path.join(CODEX, "state_5.sqlite")
+    verlauf = os.path.join(CODEX, "thread_history_1.sqlite")
+    if not (os.path.exists(zustand) and os.path.exists(verlauf)):
+        return []
+    try:
+        st = sqlite3.connect("file:%s?mode=ro" % zustand, uri=True)
+        hi = sqlite3.connect("file:%s?mode=ro" % verlauf, uri=True)
+        threads = st.execute(
+            "select id, title, cwd, created_at, updated_at, archived, first_user_message "
+            "from threads where source not like '{%'").fetchall()
+    except Exception:
+        return []
+    namen = {}
+    try:
+        with open(os.path.join(CODEX, "session_index.jsonl"), encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    o = json.loads(line)
+                    if o.get("thread_name"):
+                        namen[o["id"]] = o["thread_name"].strip()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    def iso(sek):
+        return datetime.datetime.fromtimestamp(sek).strftime("%Y-%m-%dT%H:%M:%S") if sek else ""
+
+    metas = {}
+    for tid, titel, cwd, von, bis, archiv, erste in threads:
+        name = namen.get(tid) or einzeilig(titel or erste, 80) or tid[:8]
+        metas[tid] = dict(file=None, sid=tid, first=iso(von), last=iso(bis), cwd=cwd,
+                          titel=None, ai_titel=name, stand=None, letzte=erste,
+                          hits=[], worte=set(), uuids=set(), eltern_uuids=[],
+                          app="codex", archiviert=bool(archiv), _seen=set())
+    # Vorfilter auf dem rohen JSON spart das Auspacken fast aller Zeilen;
+    # Wörter mit " oder \ stehen dort maskiert, dann ohne Vorfilter.
+    roh = None if any(c in "".join(w.pattern for w in pats) for c in '"\\') else pat
+    try:
+        zeilen = hi.execute(
+            "select thread_id, item_type, item_json, created_at_ms from thread_items "
+            "where item_type in ('userMessage', 'agentMessage', 'commandExecution') "
+            "order by thread_id, rollout_ordinal")
+        for tid, typ, js, ms in zeilen:
+            m = metas.get(tid)
+            if m is None or (roh and not roh.search(js)):
+                continue
+            try:
+                o = json.loads(js)
+            except Exception:
+                continue
+            if typ == "userMessage":
+                c = o.get("content")
+                texte = [("DU", x.get("text", "")) for x in c if isinstance(x, dict)] \
+                    if isinstance(c, list) else [("DU", str(c or ""))]
+            elif typ == "agentMessage":
+                texte = [("GPT", o.get("text") or "")]
+            else:
+                texte = [("Werkzeug", o.get("aggregatedOutput") or "")]
+            ts = iso(ms / 1000) if ms else ""
+            for quelle, t in texte:
+                for mt in pat.finditer(t):
+                    a, b = max(0, mt.start() - 70), min(len(t), mt.end() + 70)
+                    snip = " ".join(t[a:b].split())
+                    if snip in m["_seen"]:
+                        continue
+                    m["_seen"].add(snip)
+                    m["hits"].append((quelle, ts, snip))
+                    for i, p in enumerate(pats):
+                        if p.search(mt.group(0)):
+                            m["worte"].add(i)
+        # Stand = letzte Schlussantwort der App
+        for tid, m in metas.items():
+            if not m["hits"]:
+                continue
+            for (js,) in hi.execute(
+                    "select item_json from thread_items where thread_id = ? and "
+                    "item_type = 'agentMessage' order by rollout_ordinal desc limit 5", (tid,)):
+                o = json.loads(js)
+                if o.get("text"):
+                    m["stand"] = o["text"]
+                    if o.get("phase") == "final_answer":
+                        break
+    except Exception:
+        pass
+    return [dict(neu=m, glieder=[(m, 0)], n=len(m["hits"]), worte=m["worte"],
+                 von=m["first"][:10], bis=m["last"][:10]) for m in metas.values()]
+
+
 def titel_aus_datei(datei):
     """Älterer Ablageort des /rename-Namens: <session>/custom-title.json."""
     try:
@@ -193,6 +288,8 @@ def ketten(metas):
 
 def name_von(e):
     neu = e["neu"]
+    if neu.get("app") == "codex":
+        return "[ChatGPT-App] " + neu["ai_titel"] + (" (archiviert)" if neu["archiviert"] else "")
     if neu["titel"] or neu["ai_titel"]:
         return neu["titel"] or neu["ai_titel"]
     for m, _ in reversed(e["glieder"]):
@@ -263,6 +360,8 @@ def hilfe():
     print("Steht das Suchwort im per /rename vergebenen Namen, kommt die Sitzung")
     print("nach oben, getrennt durch eine Linie von den reinen Text-Treffern.")
     print("Je mehr Suchwörter im Namen stehen, desto weiter oben.\n")
+    print("Chats aus der ChatGPT-App (Codex) erscheinen mit [ChatGPT-App] im Namen.")
+    print("Sie lassen sich nur dort öffnen; Funde von ChatGPT tragen [GPT].\n")
     print("Eine Kette entsteht, wenn /compact das Gespräch in einer neuen Datei")
     print("fortsetzt. Angezeigt wird das neueste Glied, gezählt werden alle.\n")
     print("Hinweis: Manche Konsolen verschlucken das Fragezeichen.")
@@ -314,6 +413,7 @@ def waehle(eintraege, worte):
             pass
         pos = 0   # Index in die wählbaren Punkte
         oben = 0
+        hinweis = None
         while True:
             # wählbare Punkte: (eintrag, sitzung); Kopf = neuestes Glied
             punkte = []
@@ -331,8 +431,12 @@ def waehle(eintraege, worte):
             scr.addnstr(0, 0, "%d Gespräche zu: %s%s" % (
                 len(eintraege), " ".join(worte),
                 "  (%d davon im Namen)" % n_name if n_name else ""), b - 1, curses.A_BOLD)
-            scr.addnstr(1, 0, "↑↓ wählen · ←→ Funde · Enter öffnet · e Kette auf/zu · q bricht ab",
-                        b - 1, curses.A_DIM)
+            if hinweis:
+                scr.addnstr(1, 0, hinweis, b - 1, curses.A_REVERSE)
+                hinweis = None
+            else:
+                scr.addnstr(1, 0, "↑↓ wählen · ←→ Funde · Enter öffnet · e Kette auf/zu · q bricht ab",
+                            b - 1, curses.A_DIM)
             # welches Glied liefert gerade die Funde? Kopf = ganze Kette
             glied_gewaehlt = None if auf_kopf else akt_m
 
@@ -416,6 +520,9 @@ def waehle(eintraege, worte):
                 elif len(eintraege[akt_i]["glieder"]) > 1:
                     offen.add(akt_i)
             elif k in (10, 13, curses.KEY_ENTER):
+                if akt_m.get("app") == "codex":
+                    hinweis = "Dieser Chat liegt in der ChatGPT-App (Codex) – dort öffnen."
+                    continue
                 return akt_m
             elif k == ord("q"):
                 return None
@@ -472,12 +579,19 @@ def main():
     # Große Dateien zuerst lesen, damit kein Kern am Ende allein am Riesen
     # sitzt. Danach wieder in die alte Reihenfolge, denn ketten() hängt davon ab.
     gross_zuerst = sorted(dateien, key=lambda f: -os.path.getsize(f))
+    # ChatGPT-App nebenher lesen, während die Kerne die Claude-Dateien lesen
+    import threading
+    codex = []
+    faden = threading.Thread(target=lambda: codex.extend(codex_eintraege(pat, pats)))
+    faden.start()
     ergebnis = dict(zip(gross_zuerst, scan_alle(gross_zuerst, pat, pats)))
+    faden.join()
     metas = {}
     for f in dateien:
         m = ergebnis[f]
         if m:
             metas[m["sid"]] = m
+    alle = ketten(metas) + codex
 
     pruefe = all if a.alle else any
 
@@ -492,7 +606,7 @@ def main():
         return sum(1 for p in pats if any(p.search(t) for t in titel))
 
     eintraege = []
-    for e in ketten(metas):
+    for e in alle:
         e["im_namen"] = im_namen(e)
         e["namen_worte"] = namen_worte(e)
         im_text = e["n"] > 0 and (not a.alle or len(e["worte"]) == len(pats))
@@ -527,7 +641,10 @@ def main():
             print(f"  Stand  : {stand}")
         funde = alle_funde(e)
         print(f"  Fund   : {fundzeile(funde, len(funde) - 1, 160)}")
-        print(f"  Öffnen : claude --resume {neu['sid']}")
+        if neu.get("app") == "codex":
+            print("  Öffnen : in der ChatGPT-App (Codex), nicht im Terminal")
+        else:
+            print(f"  Öffnen : claude --resume {neu['sid']}")
         if len(e["glieder"]) > 1:
             print("  Kette  :")
             for m, tiefe in e["glieder"]:

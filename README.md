@@ -2,7 +2,7 @@
 
 Findet frühere [Claude Code](https://claude.com/claude-code)-Gespräche per Stichwort — über **alle** Projektordner hinweg — und öffnet sie direkt mit `claude --resume`.
 
-*English: Full-text search across all your Claude Code sessions, regardless of which folder they were started in. Pick a hit with the arrow keys, press Enter, and the session resumes in its original directory. Works on Linux, macOS and Windows.*
+*English: Full-text search across all your Claude Code sessions, regardless of which folder they were started in. Pick a hit with the arrow keys, press Enter, and the session resumes in its original directory. Also lists matching chats from the ChatGPT desktop app (Codex), read-only. Works on Linux, macOS and Windows.*
 
 ## Das Problem
 
@@ -42,6 +42,12 @@ claude-suche hellgarda
 **Reihenfolge:** Steht das Suchwort im Namen, den du per `/rename` vergeben hast, kommt die Sitzung ganz nach oben. Eine Linie trennt sie von den Sitzungen, die es „nur" im Text haben. Oben gilt: Je mehr Suchwörter im Namen stehen, desto weiter oben. Bei `phase.rs november` steht also „Phase.rs November“ vor „phase.rs Oktober“. Danach sortiert die Trefferzahl. Claudes automatische Titel zählen dafür nicht.
 
 Enter wechselt in den Ordner und startet `claude --resume <id>`. Claude Code öffnet dabei immer die ganze Sitzung; an die Fundstelle selbst springt es nicht.
+
+### Chats aus der ChatGPT-App (Codex)
+
+Hast du die ChatGPT-Desktop-App mit Codex installiert, durchsucht `claude-suche` deren Chats gleich mit. Sie stehen mit `[ChatGPT-App]` im Namen in derselben Liste, Funde von ChatGPT tragen `[GPT]`. Öffnen lassen sie sich nur in der App; Enter zeigt dann einen Hinweis. So weißt du wenigstens, *wo* du etwas besprochen hast.
+
+Gelesen wird nur, was die App lokal unter `~/.codex` ablegt. Normale ChatGPT-Chats ohne Codex liegen bei OpenAI im Netz und fehlen deshalb.
 
 ### Ketten nach `/compact`
 
